@@ -1,30 +1,91 @@
+use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
 use winreg::enums::*;
 use winreg::RegKey;
 
-fn flatten_folder(dir: &Path) -> std::io::Result<()> {
+fn get_unique_file_name(parent_dir: &Path, file_name: &str) -> PathBuf {
+    fn go(parent_dir: &Path, file_name: &str, counter: u32) -> PathBuf {
+        let new_path = {
+            let extension = Path::new(file_name)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| format!(".{ext}"))
+                .unwrap_or_default();
+
+            let file_stem = Path::new(file_name)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or(file_name);
+
+            let new_file_name = match counter {
+                0 => format!("{file_stem}{extension}"),
+                count => format!("{file_stem}({count}){extension}"),
+            };
+
+            parent_dir.join(new_file_name)
+        };
+
+        if new_path.exists() {
+            go(parent_dir, file_name, counter + 1)
+        } else {
+            new_path
+        }
+    }
+
+    go(parent_dir, file_name, 0)
+}
+
+fn flatten_folder(dir: &Path) -> io::Result<()> {
     let parent_dir = dir.parent().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "Parent directory not found")
+        std::io::Error::new(io::ErrorKind::NotFound, "Parent directory not found")
     })?;
 
-    for entry in fs::read_dir(dir)? {
-        let path = entry?.path();
-        let file_name = path.file_name().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid file name")
-        })?;
+    // 同名フォルダ対策のため、一時フォルダ名を作成
+    let temp_dir = parent_dir.join("__temp_flatten_folder");
+    if temp_dir.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "Temporary folder already exists",
+        ));
+    }
+    fs::create_dir(&temp_dir)?;
 
-        let new_path = parent_dir.join(file_name);
-        fs::rename(&path, &new_path)?;
+    let files: HashMap<PathBuf, PathBuf> = fs::read_dir(dir)?
+        .into_iter()
+        .map(|entry| {
+            let path = entry?.path();
+            let file_name = path
+                .file_name()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid file name"))?;
+
+            let temp_path = temp_dir.join(file_name);
+
+            Ok::<_, io::Error>((path, temp_path))
+        })
+        .collect::<Result<HashMap<_, _>, _>>()?;
+
+    for (current_path, temp_path) in &files {
+        fs::rename(current_path, temp_path)?;
     }
 
     fs::remove_dir(dir)?;
 
+    for temp_path in files.values() {
+        if let Some(original_file_name) = temp_path.file_name().and_then(|n| n.to_str()) {
+            let new_path = get_unique_file_name(parent_dir, original_file_name);
+            fs::rename(temp_path, new_path)?;
+        }
+    }
+
+    fs::remove_dir(temp_dir)?;
+
     Ok(())
 }
 
-fn add_context_menu() -> std::io::Result<()> {
+fn add_context_menu() -> io::Result<()> {
     let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
         .create_subkey("Software\\Classes\\Directory\\shell\\FlattenFolders")?;
     key.set_value("", &"Flatten Folders")?;
@@ -38,7 +99,7 @@ fn add_context_menu() -> std::io::Result<()> {
     command_key.set_value("", &command)
 }
 
-fn remove_context_menu() -> std::io::Result<()> {
+fn remove_context_menu() -> io::Result<()> {
     RegKey::predef(HKEY_CURRENT_USER)
         .delete_subkey_all("Software\\Classes\\Directory\\shell\\FlattenFolders")
 }
