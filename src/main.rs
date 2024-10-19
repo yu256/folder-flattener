@@ -7,35 +7,21 @@ use winreg::enums::*;
 use winreg::RegKey;
 
 fn get_unique_file_name(parent_dir: &Path, file_name: &str) -> PathBuf {
-    fn go(parent_dir: &Path, file_name: &str, counter: u32) -> PathBuf {
-        let new_path = {
-            let extension = Path::new(file_name)
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| format!(".{ext}"))
-                .unwrap_or_default();
+    let extension = Path::new(file_name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| format!(".{ext}"))
+        .unwrap_or_default();
 
-            let file_stem = Path::new(file_name)
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or(file_name);
+    let file_stem = Path::new(file_name)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or(file_name);
 
-            let new_file_name = match counter {
-                0 => format!("{file_stem}{extension}"),
-                count => format!("{file_stem}({count}){extension}"),
-            };
-
-            parent_dir.join(new_file_name)
-        };
-
-        if new_path.exists() {
-            go(parent_dir, file_name, counter + 1)
-        } else {
-            new_path
-        }
-    }
-
-    go(parent_dir, file_name, 0)
+    std::iter::once(parent_dir.join(file_name))
+        .chain((1..).map(|count| parent_dir.join(format!("{file_stem}({count}){extension}"))))
+        .find(|new_path| !new_path.exists())
+        .unwrap()
 }
 
 fn flatten_folder(dir: &Path) -> io::Result<()> {
