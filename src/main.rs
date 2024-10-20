@@ -1,33 +1,41 @@
 use std::collections::HashMap;
 use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use winreg::enums::*;
 use winreg::RegKey;
 
-fn get_unique_file_name(parent_dir: &Path, file_name: &str) -> PathBuf {
-    let extension = Path::new(file_name)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| format!(".{ext}"))
-        .unwrap_or_default();
+fn get_unique_file_name(parent_dir: &Path, file_path: &Path) -> PathBuf {
+    let extension = file_path.extension().map(|ext| {
+        let mut extension = OsString::new();
+        extension.push(".");
+        extension.push(ext);
+        extension
+    });
 
-    let file_stem = Path::new(file_name)
+    let filename_base = file_path
         .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or(file_name);
+        .map_or_else(OsString::new, OsString::from);
 
-    std::iter::once(parent_dir.join(file_name))
-        .chain((1..).map(|count| parent_dir.join(format!("{file_stem}({count}){extension}"))))
+    std::iter::once(parent_dir.join(file_path.file_name().unwrap_or_default()))
+        .chain((1..).map(|count| {
+            let mut filename = filename_base.clone();
+            filename.push(format!("({count})"));
+            if let Some(ref ext) = extension {
+                filename.push(ext);
+            }
+            parent_dir.join(filename)
+        }))
         .find(|new_path| !new_path.exists())
         .unwrap()
 }
 
 fn flatten_folder(dir: &Path) -> io::Result<()> {
-    let parent_dir = dir.parent().ok_or_else(|| {
-        std::io::Error::new(io::ErrorKind::NotFound, "Parent directory not found")
-    })?;
+    let parent_dir = dir
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Parent directory not found"))?;
 
     // 同名フォルダ対策のため、一時フォルダ名を作成
     let temp_dir = parent_dir.join("__temp_flatten_folder");
@@ -40,7 +48,6 @@ fn flatten_folder(dir: &Path) -> io::Result<()> {
     fs::create_dir(&temp_dir)?;
 
     let files: HashMap<PathBuf, PathBuf> = fs::read_dir(dir)?
-        .into_iter()
         .map(|entry| {
             let path = entry?.path();
             let file_name = path
@@ -60,10 +67,8 @@ fn flatten_folder(dir: &Path) -> io::Result<()> {
     fs::remove_dir(dir)?;
 
     for temp_path in files.values() {
-        if let Some(original_file_name) = temp_path.file_name().and_then(|n| n.to_str()) {
-            let new_path = get_unique_file_name(parent_dir, original_file_name);
-            fs::rename(temp_path, new_path)?;
-        }
+        let new_path = get_unique_file_name(parent_dir, temp_path);
+        fs::rename(temp_path, new_path)?;
     }
 
     fs::remove_dir(temp_dir)?;
